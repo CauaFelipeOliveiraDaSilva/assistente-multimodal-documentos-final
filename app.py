@@ -7,11 +7,32 @@ import streamlit as st
 from openai import OpenAI
 
 # ---------- 1. Conexão com o Gemini (plano gratuito) ----------
-MODEL = "gemini-2.5-flash"
 client = OpenAI(
     base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
     api_key=st.secrets["GEMINI_API_KEY"],
 )
+
+
+@st.cache_resource(show_spinner=False)
+def escolher_modelo():
+    """Pergunta à API quais modelos existem e escolhe um 'flash' com visão."""
+    padrao = "gemini-3-flash-preview"
+    try:
+        ids = [m.id.replace("models/", "") for m in client.models.list()]
+    except Exception:
+        return padrao
+    if padrao in ids:
+        return padrao
+    excluir = ("lite", "image", "tts", "audio", "live", "embedding", "imagen", "veo")
+    flash = sorted(
+        (i for i in ids if "flash" in i and not any(x in i for x in excluir)),
+        reverse=True,
+    )
+    return flash[0] if flash else padrao
+
+
+MODEL = escolher_modelo()
+st.sidebar.caption(f"Modelo em uso: {MODEL}")
 
 # ---------- 2. Prompts ----------
 PAGE_PROMPT = (
@@ -41,15 +62,13 @@ DOCUMENTO:
 {doc}"""
 
 
-# ---------- 3. Chamada ao modelo, com aviso amigável se estourar a cota ----------
+# ---------- 3. Chamada ao modelo, com aviso amigável se der erro ----------
 def ask(messages):
     try:
-        r = client.chat.completions.create(
-            model=MODEL, temperature=0, messages=messages
-        )
+        r = client.chat.completions.create(model=MODEL, messages=messages)
         return r.choices[0].message.content
     except Exception as e:
-        st.error(f"Falha na chamada ao modelo (talvez o limite gratuito): {e}")
+        st.error(f"Falha na chamada ao modelo '{MODEL}' (nome do modelo ou limite gratuito): {e}")
         st.stop()
 
 
