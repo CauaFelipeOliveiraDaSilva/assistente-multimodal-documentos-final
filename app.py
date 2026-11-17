@@ -1,6 +1,7 @@
 import base64
 import json
 import re
+import time
 
 import fitz  # PyMuPDF
 import streamlit as st
@@ -14,25 +15,23 @@ client = OpenAI(
 
 
 @st.cache_resource(show_spinner=False)
-def escolher_modelo():
-    """Pergunta à API quais modelos existem e escolhe um 'flash' com visão."""
+def listar_modelos():
+    """Lista modelos Gemini com visão, em ordem de preferência."""
     padrao = "gemini-3-flash-preview"
     try:
         ids = [m.id.replace("models/", "") for m in client.models.list()]
     except Exception:
-        return padrao
-    if padrao in ids:
-        return padrao
-    excluir = ("lite", "image", "tts", "audio", "live", "embedding", "imagen", "veo")
-    flash = sorted(
-        (i for i in ids if "flash" in i and not any(x in i for x in excluir)),
-        reverse=True,
-    )
-    return flash[0] if flash else padrao
+        return [padrao]
+    excluir = ("image", "tts", "audio", "live", "embedding", "imagen", "veo")
+    flash = [i for i in ids if "flash" in i and not any(x in i for x in excluir)]
+    principais = sorted((i for i in flash if "lite" not in i), reverse=True)
+    leves = sorted((i for i in flash if "lite" in i), reverse=True)
+    ordem = ([padrao] if padrao in ids else []) + principais + leves
+    return list(dict.fromkeys(ordem)) or [padrao]
 
 
-MODEL = escolher_modelo()
-st.sidebar.caption(f"Modelo em uso: {MODEL}")
+MODELOS = listar_modelos()[:4]
+st.sidebar.caption("Modelos (em ordem de uso): " + ", ".join(MODELOS))
 
 # Margem aceita quando um valor foi lido pela escala de um gráfico (3%).
 # Aumente para tolerar mais erro de leitura, diminua para ser mais rigoroso.
@@ -111,14 +110,22 @@ DOCUMENTO:
 {doc}"""
 
 
-# ---------- 3. Chamada ao modelo, com aviso amigável se der erro ----------
+# ---------- 3. Chamada ao modelo, com nova tentativa e troca de modelo ----------
 def ask(messages):
-    try:
-        r = client.chat.completions.create(model=MODEL, messages=messages)
-        return r.choices[0].message.content
-    except Exception as e:
-        st.error(f"Falha na chamada ao modelo '{MODEL}' (nome do modelo ou limite gratuito): {e}")
-        st.stop()
+    erro = None
+    for modelo in MODELOS:
+        for tentativa in range(2):
+            try:
+                r = client.chat.completions.create(model=modelo, messages=messages)
+                return r.choices[0].message.content
+            except Exception as e:
+                erro = e
+                if "429" in str(e) and tentativa == 0:
+                    time.sleep(20)  # limite por minuto: espera e tenta de novo
+                    continue
+                break  # limite diário ou outro erro: passa para o próximo modelo
+    st.error(f"Todos os modelos falharam (provável limite gratuito). Último erro: {erro}")
+    st.stop()
 
 
 # ---------- 4. Leitura do PDF (visão) ----------
