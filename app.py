@@ -113,22 +113,36 @@ DOCUMENTO:
 
 
 # ---------- 3. Chamada ao modelo, com nova tentativa e troca de modelo ----------
+ERROS_TEMPORARIOS = ("503", "500", "502", "504", "overloaded",
+                     "unavailable", "timed out", "timeout")
+
+
 def ask(messages):
     erro = None
     for modelo in MODELOS:
-        for tentativa in range(2):
+        for tentativa in range(3):
             try:
                 r = client.chat.completions.create(model=modelo, messages=messages)
                 return r.choices[0].message.content
             except Exception as e:
                 erro = e
-                if "429" in str(e) and tentativa == 0:
+                texto = str(e).lower()
+                if "429" in texto and tentativa == 0:
                     st.toast(f"Limite de uso em {modelo}. Esperando 20 s...")
                     time.sleep(20)  # limite por minuto: espera e tenta de novo
                     continue
-                break  # limite diário ou outro erro: passa para o próximo modelo
-        st.toast(f"{modelo} indisponível, tentando o próximo...")
-    st.error(f"Todos os modelos falharam (provável limite gratuito). Último erro: {erro}")
+                if any(t in texto for t in ERROS_TEMPORARIOS) and tentativa < 2:
+                    espera = 8 * (tentativa + 1)  # 8 s e depois 16 s
+                    st.toast(f"{modelo} sobrecarregado. Nova tentativa em {espera} s...")
+                    time.sleep(espera)
+                    continue
+                break  # cota do dia esgotada ou erro persistente: próximo modelo
+        st.sidebar.warning(f"{modelo} falhou: {str(erro)[:150]}")
+    st.error(
+        "Todos os modelos falharam. Erro 429 = limite de uso gratuito; "
+        "erro 503 = servidor do Google sobrecarregado (tente de novo em alguns "
+        f"minutos). Último erro: {erro}"
+    )
     st.stop()
 
 
