@@ -35,24 +35,47 @@ MODEL = escolher_modelo()
 st.sidebar.caption(f"Modelo em uso: {MODEL}")
 
 # ---------- 2. Prompts ----------
-PAGE_PROMPT = (
-    "Descreva esta página de documento em português. Transcreva o texto, "
-    "reproduza tabelas com todos os valores e, para gráficos, liste cada "
-    "valor lido (rótulo e número). Não resuma nem invente dados."
-)
+PAGE_PROMPT = """Descreva esta página de documento em português.
 
-CHECK_PROMPT = """Abaixo está a descrição de um documento. Identifique os casos em
-que um total declarado deve ser igual à soma de componentes (ex.: total de uma
-tabela vs. valores mensais de um gráfico do MESMO período). Use somente
-componentes do período do total. Números inteiros, sem separador de milhar.
-Responda SOMENTE com JSON, neste formato:
-[{"descricao": "...", "periodo": "...", "total_declarado": 0,
-  "componentes": {"rotulo": 0}}]
-Se não houver, responda []."""
+1. Transcreva o texto e reproduza as tabelas com todos os valores.
+
+2. Para CADA gráfico, escreva um bloco neste formato:
+GRÁFICO: <título>
+Tipo: <barras, linhas, pizza, empilhado...>
+Eixo X: <o que representa> | Eixo Y: <unidade e escala>
+Valores: <rótulo = valor> para cada ponto ou barra, sem pular nenhum
+Valores impressos no gráfico: <sim ou não>. Se não, marque cada valor
+lido pela escala como (estimado).
+Período ou escopo coberto: <ex.: janeiro a junho>
+
+3. Não resuma nem invente dados."""
+
+CHECK_PROMPT = """Abaixo está a descrição de um documento. Faça dois tipos de
+conferência e responda SOMENTE com JSON, sem texto extra.
+
+1) "somas": casos em que um total declarado deve ser igual à soma de componentes
+(ex.: total de tabela vs. valores mensais de um gráfico do MESMO período).
+Use somente componentes do período do total. Inclua gráficos de percentuais:
+o total declarado é 100 e os componentes são os percentuais lidos do gráfico.
+
+2) "comparacoes": o MESMO item aparecendo em dois lugares do documento (ex.:
+tabela e gráfico) com valores que deveriam ser iguais. Liste TODOS os itens
+comparáveis, mesmo que os valores sejam iguais.
+
+Use números sem separador de milhar e sem o símbolo %. O campo "estimado" é
+true se algum valor usado foi marcado como (estimado) na descrição, e false
+caso contrário. Formato:
+{"somas": [{"descricao": "...", "periodo": "...", "total_declarado": 0,
+            "componentes": {"rotulo": 0}, "estimado": false}],
+ "comparacoes": [{"item": "...", "fonte_a": "tabela", "valor_a": 0,
+                  "fonte_b": "gráfico", "valor_b": 0, "estimado": false}]}
+Se não houver, use listas vazias."""
 
 SYSTEM = """Você é um assistente de análise de documentos. Responda em português
 usando apenas o conteúdo abaixo. Quando citar números, compare com dados
 equivalentes em outras partes do documento e aponte divergências explicitamente.
+Valores marcados como (estimado) foram lidos pela escala de um gráfico e têm
+margem de erro: avise o usuário quando usá-los.
 
 VERIFICAÇÃO AUTOMÁTICA (calculada por código, confiável):
 {checks}
@@ -97,27 +120,69 @@ def index_pdf(pdf_bytes):
 
 
 # ---------- 5. Verificação cruzada (modelo extrai, Python calcula) ----------
+def num(x):
+    """Converte o valor devolvido pelo modelo (número ou texto) em número."""
+    if isinstance(x, (int, float)):
+        return x
+    s = re.sub(r"[^\d,.\-]", "", str(x))
+    if "," in s:
+        s = s.replace(".", "").replace(",", ".")
+    return float(s)
+
+
+def fmtn(x):
+    return int(x) if x == int(x) else round(x, 2)
+
+
+def eh_estimado(item):
+    return item.get("estimado") is True or str(item.get("estimado")).lower() == "true"
+
+
+def status_de(dif, estimado):
+    if abs(dif) < 1e-9:
+        return "OK"
+    if estimado:
+        return "POSSÍVEL DIVERGÊNCIA (valor estimado pela escala do gráfico)"
+    return "DIVERGÊNCIA"
+
+
 def run_checks(doc):
     texto = ask([{"role": "user",
                   "content": CHECK_PROMPT + "\n\nDOCUMENTO:\n" + doc}])
-    m = re.search(r"\[.*\]", texto, re.S)
+    m = re.search(r"\{.*\}|\[.*\]", texto, re.S)
     try:
-        items = json.loads(m.group(0)) if m else []
+        dados = json.loads(m.group(0)) if m else {}
     except json.JSONDecodeError:
         return "Verificação automática indisponível."
+    if isinstance(dados, list):  # formato antigo
+        dados = {"somas": dados}
 
     linhas = []
-    for it in items:
+
+    for it in dados.get("somas", []):
         try:
-            total = it["total_declarado"]
-            soma = sum(it["componentes"].values())
-        except (KeyError, TypeError, AttributeError):
+            total = num(it["total_declarado"])
+            soma = sum(num(v) for v in it["componentes"].values())
+        except (KeyError, TypeError, AttributeError, ValueError):
             continue
-        status = "OK" if soma == total else f"DIVERGÊNCIA (diferença de {soma - total})"
+        dif = soma - total
+        status = status_de(dif, eh_estimado(it))
+        if status != "OK":
+            status += f" — a soma é {'maior' if dif > 0 else 'menor'} em {fmtn(abs(dif))}"
         linhas.append(
             f"- {it.get('descricao', '')} ({it.get('periodo', '')}): "
-            f"total declarado = {total}, soma dos componentes = {soma} → {status}"
-        )
+            f"total declarado = {fmtn(total)}, soma dos componentes = {fmtn(soma)} → {status}")
+
+    for c in dados.get("comparacoes", []):
+        try:
+            a, b = num(c["valor_a"]), num(c["valor_b"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        status = status_de(a - b, eh_estimado(c))
+        linhas.append(
+            f"- {c.get('item', '')}: {c.get('fonte_a', 'fonte A')} = {fmtn(a)} vs. "
+            f"{c.get('fonte_b', 'fonte B')} = {fmtn(b)} → {status}")
+
     return "\n".join(linhas) or "Nenhuma verificação encontrada."
 
 
@@ -136,6 +201,9 @@ if file:
 
     st.subheader("Verificação automática de consistência")
     st.info(st.session_state.checks)
+
+    with st.expander("Texto extraído do documento (leitura do modelo)"):
+        st.markdown(st.session_state.doc)
 
     for m in st.session_state.messages:
         st.chat_message(m["role"]).write(m["content"])
