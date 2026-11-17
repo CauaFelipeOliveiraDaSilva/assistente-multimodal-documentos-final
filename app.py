@@ -91,4 +91,193 @@ caso contrário. Formato:
 {"somas": [{"descricao": "...", "periodo": "...", "total_declarado": 0,
             "componentes": {"rotulo": 0}, "estimado": false}],
  "comparacoes": [{"item": "...", "fonte_a": "tabela", "valor_a": 0,
-                  "fonte_b": "gráfico", "valor_b": 0, "estimado":
+                  "fonte_b": "gráfico", "valor_b": 0, "estimado": false}],
+ "calculos": [{"afirmacao": "...", "tipo": "variacao_percentual",
+               "valor_inicial": 0, "valor_final": 0, "valores": [],
+               "valor_declarado": 0, "estimado": false}]}
+Se não houver, use listas vazias."""
+
+SYSTEM = """Você é um assistente de análise de documentos. Responda em português
+usando apenas o conteúdo abaixo. Quando citar números, compare com dados
+equivalentes em outras partes do documento e aponte divergências explicitamente.
+Valores marcados como (estimado) foram lidos pela escala de um gráfico e têm
+margem de erro: avise o usuário quando usá-los.
+
+VERIFICAÇÃO AUTOMÁTICA (calculada por código, confiável):
+{checks}
+Se houver DIVERGÊNCIA acima, informe-a ao usuário com os valores e a diferença.
+
+DOCUMENTO:
+{doc}"""
+
+
+# ---------- 3. Chamada ao modelo, com aviso amigável se der erro ----------
+def ask(messages):
+    try:
+        r = client.chat.completions.create(model=MODEL, messages=messages)
+        return r.choices[0].message.content
+    except Exception as e:
+        st.error(f"Falha na chamada ao modelo '{MODEL}' (nome do modelo ou limite gratuito): {e}")
+        st.stop()
+
+
+# ---------- 4. Leitura do PDF (visão) ----------
+def pdf_to_pngs(pdf_bytes, max_pages=5):
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    for i, page in enumerate(doc):
+        if i >= max_pages:
+            break
+        yield i + 1, page.get_pixmap(dpi=150).tobytes("png")
+
+
+def describe_page(n, png):
+    b64 = base64.b64encode(png).decode()
+    texto = ask([{"role": "user", "content": [
+        {"type": "text", "text": PAGE_PROMPT},
+        {"type": "image_url",
+         "image_url": {"url": f"data:image/png;base64,{b64}"}},
+    ]}])
+    return f"### Página {n}\n{texto}"
+
+
+@st.cache_data(show_spinner=False)
+def index_pdf(pdf_bytes):
+    return "\n\n".join(describe_page(n, p) for n, p in pdf_to_pngs(pdf_bytes))
+
+
+# ---------- 5. Verificação cruzada (modelo extrai, Python calcula) ----------
+def num(x):
+    """Converte o valor devolvido pelo modelo (número ou texto) em número."""
+    if isinstance(x, (int, float)):
+        return x
+    s = re.sub(r"[^\d,.\-]", "", str(x))
+    if "," in s:
+        s = s.replace(".", "").replace(",", ".")
+    return float(s)
+
+
+def fmtn(x):
+    return int(x) if x == int(x) else round(x, 2)
+
+
+def eh_estimado(item):
+    return item.get("estimado") is True or str(item.get("estimado")).lower() == "true"
+
+
+def status_de(dif, ref, estimado, folga=0.0):
+    """OK / OK dentro da margem / POSSÍVEL DIVERGÊNCIA / DIVERGÊNCIA."""
+    d = abs(dif)
+    if d <= folga + 1e-9:
+        return "OK"
+    if estimado:
+        if d <= TOLERANCIA_ESTIMADO * abs(ref) + folga:
+            return "OK (dentro da margem de leitura do gráfico)"
+        return "POSSÍVEL DIVERGÊNCIA (valor estimado pela escala do gráfico)"
+    return "DIVERGÊNCIA"
+
+
+def com_diferenca(status, dif):
+    if status.startswith("OK"):
+        return status
+    return f"{status} — a diferença é {fmtn(abs(dif))}"
+
+
+def run_checks(doc):
+    texto = ask([{"role": "user",
+                  "content": CHECK_PROMPT + "\n\nDOCUMENTO:\n" + doc}])
+    m = re.search(r"\{.*\}|\[.*\]", texto, re.S)
+    try:
+        dados = json.loads(m.group(0)) if m else {}
+    except json.JSONDecodeError:
+        return "Verificação automática indisponível."
+    if isinstance(dados, list):  # formato antigo
+        dados = {"somas": dados}
+
+    linhas = []
+
+    # --- somas: total declarado vs. soma dos componentes ---
+    for it in dados.get("somas", []):
+        try:
+            total = num(it["total_declarado"])
+            soma = sum(num(v) for v in it["componentes"].values())
+        except (KeyError, TypeError, AttributeError, ValueError):
+            continue
+        dif = soma - total
+        status = com_diferenca(status_de(dif, total, eh_estimado(it)), dif)
+        linhas.append(
+            f"- {it.get('descricao', '')} ({it.get('periodo', '')}): "
+            f"total declarado = {fmtn(total)}, soma dos componentes = {fmtn(soma)} → {status}")
+
+    # --- comparações: o mesmo item em duas fontes diferentes ---
+    for c in dados.get("comparacoes", []):
+        try:
+            a, b = num(c["valor_a"]), num(c["valor_b"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        fa, fb = str(c.get("fonte_a", "")), str(c.get("fonte_b", ""))
+        if fa.strip().lower() == fb.strip().lower():
+            continue  # mesma fonte: comparação sem sentido
+        dif = a - b
+        status = com_diferenca(status_de(dif, max(abs(a), abs(b)), eh_estimado(c)), dif)
+        linhas.append(
+            f"- {c.get('item', '')}: {fa or 'fonte A'} = {fmtn(a)} vs. "
+            f"{fb or 'fonte B'} = {fmtn(b)} → {status}")
+
+    # --- cálculos: o Python refaz a conta da afirmação ---
+    for c in dados.get("calculos", []):
+        try:
+            declarado = num(c["valor_declarado"])
+            if c.get("tipo") == "variacao_percentual":
+                ini, fim = num(c["valor_inicial"]), num(c["valor_final"])
+                real = (fim - ini) / ini * 100
+            elif c.get("tipo") == "media":
+                vals = [num(v) for v in c["valores"]]
+                real = sum(vals) / len(vals)
+            else:
+                continue
+        except (KeyError, TypeError, ValueError, ZeroDivisionError):
+            continue
+        dif = real - declarado
+        # folga de 0,5 porque o texto costuma arredondar o resultado
+        status = com_diferenca(
+            status_de(dif, declarado, eh_estimado(c), folga=0.5), dif)
+        linhas.append(
+            f"- {c.get('afirmacao', '')}: declarado = {round(declarado, 1)}, "
+            f"recalculado = {round(real, 1)} → {status}")
+
+    return "\n".join(linhas) or "Nenhuma verificação encontrada."
+
+
+# ---------- 6. Interface ----------
+st.title("Assistente Multimodal de Documentos")
+file = st.file_uploader("Envie um PDF", type="pdf")
+
+if file:
+    if st.session_state.get("file_name") != file.name:
+        with st.spinner("Lendo páginas, tabelas e gráficos..."):
+            st.session_state.doc = index_pdf(file.getvalue())
+        with st.spinner("Conferindo totais, somas e cálculos..."):
+            st.session_state.checks = run_checks(st.session_state.doc)
+        st.session_state.file_name = file.name
+        st.session_state.messages = []
+
+    st.subheader("Verificação automática de consistência")
+    st.info(st.session_state.checks)
+
+    with st.expander("Texto extraído do documento (leitura do modelo)"):
+        st.markdown(st.session_state.doc)
+
+    for m in st.session_state.messages:
+        st.chat_message(m["role"]).write(m["content"])
+
+    if q := st.chat_input("Pergunte sobre o documento"):
+        st.session_state.messages.append({"role": "user", "content": q})
+        st.chat_message("user").write(q)
+        a = ask([
+            {"role": "system",
+             "content": SYSTEM.format(doc=st.session_state.doc,
+                                      checks=st.session_state.checks)},
+            *st.session_state.messages,
+        ])
+        st.session_state.messages.append({"role": "assistant", "content": a})
+        st.chat_message("assistant").write(a)
