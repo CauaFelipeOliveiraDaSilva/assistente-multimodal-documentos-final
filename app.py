@@ -11,6 +11,8 @@ from openai import OpenAI
 client = OpenAI(
     base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
     api_key=st.secrets["GEMINI_API_KEY"],
+    timeout=60,       # cada chamada desiste em 60 s em vez de ficar travada
+    max_retries=0,    # as novas tentativas são feitas pela função ask()
 )
 
 
@@ -22,7 +24,7 @@ def listar_modelos():
         ids = [m.id.replace("models/", "") for m in client.models.list()]
     except Exception:
         return [padrao]
-    excluir = ("image", "tts", "audio", "live", "embedding", "imagen", "veo")
+    excluir = ("omni", "image", "tts", "audio", "live", "embedding", "imagen", "veo")
     flash = [i for i in ids if "flash" in i and not any(x in i for x in excluir)]
     principais = sorted((i for i in flash if "lite" not in i), reverse=True)
     leves = sorted((i for i in flash if "lite" in i), reverse=True)
@@ -121,9 +123,11 @@ def ask(messages):
             except Exception as e:
                 erro = e
                 if "429" in str(e) and tentativa == 0:
+                    st.toast(f"Limite de uso em {modelo}. Esperando 20 s...")
                     time.sleep(20)  # limite por minuto: espera e tenta de novo
                     continue
                 break  # limite diário ou outro erro: passa para o próximo modelo
+        st.toast(f"{modelo} indisponível, tentando o próximo...")
     st.error(f"Todos os modelos falharam (provável limite gratuito). Último erro: {erro}")
     st.stop()
 
