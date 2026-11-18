@@ -47,7 +47,7 @@ footer { visibility: hidden; }
 [data-testid="stSidebar"] [data-testid="stCaptionContainer"] { color: var(--suave); }
 [data-testid="stSidebar"] h3 { font-size: 1rem; letter-spacing: 0.04em; }
 
-/* Itens do histórico (botões da barra lateral) */
+/* Itens da lista de conversas (botões da barra lateral) */
 [data-testid="stSidebar"] .stButton > button {
     background: transparent;
     color: var(--texto);
@@ -62,6 +62,20 @@ footer { visibility: hidden; }
     background: rgba(37, 99, 235, 0.15);
     border-color: var(--azul);
     color: #ffffff;
+}
+
+/* Botão "Nova conversa" */
+[data-testid="stSidebar"] .stButton > button[kind="primary"],
+[data-testid="stSidebar"] .stButton > button[data-testid="stBaseButton-primary"] {
+    background: var(--azul);
+    color: #ffffff;
+    border: 0;
+    font-weight: 600;
+    justify-content: center;
+}
+[data-testid="stSidebar"] .stButton > button[kind="primary"]:hover,
+[data-testid="stSidebar"] .stButton > button[data-testid="stBaseButton-primary"]:hover {
+    background: #1d4ed8;
 }
 
 /* Detalhes técnicos discretos */
@@ -428,7 +442,71 @@ def run_checks(doc):
     return "\n".join(linhas) or "Nenhuma verificação encontrada."
 
 
-# ---------- 6. Interface ----------
+@st.cache_data(show_spinner=False)
+def checks_pdf(doc):
+    """Guarda a verificação em cache: o mesmo documento não gasta cota duas vezes."""
+    return run_checks(doc)
+
+
+# ---------- 6. Conversas (estilo chat de IA) ----------
+def nova_conversa():
+    """Cria uma conversa vazia, a menos que já exista uma vazia aberta."""
+    conversas = st.session_state.conversas
+    atual = conversas.get(st.session_state.ativa)
+    if atual and atual["doc"] is None and not atual["messages"]:
+        return  # já está numa conversa vazia
+    st.session_state.proximo_id += 1
+    cid = st.session_state.proximo_id
+    conversas[cid] = {"nome_pdf": None, "doc": None, "checks": None, "messages": []}
+    st.session_state.ativa = cid
+
+
+def excluir_conversa(cid):
+    conversas = st.session_state.conversas
+    conversas.pop(cid, None)
+    if st.session_state.ativa == cid:
+        restantes = list(conversas)
+        st.session_state.ativa = restantes[-1] if restantes else None
+    if not conversas:
+        nova_conversa()
+
+
+if "conversas" not in st.session_state:
+    st.session_state.conversas = {}
+    st.session_state.proximo_id = 0
+    st.session_state.ativa = None
+    nova_conversa()
+
+conversas = st.session_state.conversas
+
+# ---------- 7. Barra lateral ----------
+with st.sidebar:
+    if st.button("＋  Nova conversa", key="nova", type="primary",
+                 use_container_width=True):
+        nova_conversa()
+        st.rerun()
+
+    st.markdown("### Conversas")
+    for cid in reversed(list(conversas)):
+        c = conversas[cid]
+        titulo = c["nome_pdf"] or "Nova conversa"
+        titulo = titulo if len(titulo) <= 22 else titulo[:19] + "..."
+        rotulo = ("● " if cid == st.session_state.ativa else "") + titulo
+        col_a, col_b = st.columns([5, 1])
+        if col_a.button(rotulo, key=f"conv_{cid}", use_container_width=True):
+            st.session_state.ativa = cid
+            st.rerun()
+        if col_b.button("✕", key=f"del_{cid}", help="Excluir conversa"):
+            excluir_conversa(cid)
+            st.rerun()
+
+    st.write("")
+    with st.expander("Detalhes técnicos", expanded=False):
+        st.caption("Modelos (em ordem de uso): " + ", ".join(MODELOS))
+        for falha in st.session_state.get("falhas", [])[-8:]:
+            st.caption("⚠ " + falha)
+
+# ---------- 8. Tela principal ----------
 st.markdown(
     """
 <div class="mw-hero">
@@ -439,60 +517,24 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-file = st.file_uploader("Envie um PDF", type="pdf")
 
-# Histórico da sessão: cada PDF analisado fica guardado com a verificação e o chat
-if "historico" not in st.session_state:
-    st.session_state.historico = {}
-    st.session_state.ativo = None
-    st.session_state.ultimo_upload = None
+atual = conversas[st.session_state.ativa]
 
-historico = st.session_state.historico
-
-if file is None:
-    st.session_state.ultimo_upload = None
-elif st.session_state.ultimo_upload != (file.name, file.size):
-    chave = (file.name, file.size)
-    existente = next((c for c, h in historico.items() if h["chave"] == chave), None)
-    if existente is None:  # só analisa se esse PDF ainda não está no histórico
+if atual["doc"] is None:
+    # Conversa vazia: o PDF enviado aqui fica ligado a esta conversa
+    file = st.file_uploader("Envie um PDF para começar esta conversa", type="pdf",
+                            key=f"up_{st.session_state.ativa}")
+    if file is not None:
         with st.spinner("Lendo páginas, tabelas e gráficos..."):
             doc = index_pdf(file.getvalue())
         with st.spinner("Conferindo totais, somas e cálculos..."):
-            checks = run_checks(doc)
-        existente = max(historico, default=0) + 1
-        historico[existente] = {
-            "chave": chave, "nome": file.name,
-            "doc": doc, "checks": checks, "messages": [],
-        }
-    st.session_state.ativo = existente
-    st.session_state.ultimo_upload = chave
-
-# Barra lateral: histórico e detalhes técnicos discretos
-with st.sidebar:
-    st.markdown("### Histórico")
-    if not historico:
-        st.caption("Nenhuma análise ainda.")
-    for cid in reversed(list(historico)):
-        h = historico[cid]
-        nome = h["nome"] if len(h["nome"]) <= 26 else h["nome"][:23] + "..."
-        rotulo = ("● " if cid == st.session_state.ativo else "") + nome
-        if st.button(rotulo, key=f"hist_{cid}", use_container_width=True):
-            st.session_state.ativo = cid
-            st.rerun()
-    if historico and st.button("Limpar histórico", key="limpar_hist"):
-        st.session_state.historico = {}
-        st.session_state.ativo = None
+            checks = checks_pdf(doc)
+        atual["nome_pdf"] = file.name
+        atual["doc"] = doc
+        atual["checks"] = checks
         st.rerun()
-    st.write("")
-    with st.expander("Detalhes técnicos", expanded=False):
-        st.caption("Modelos (em ordem de uso): " + ", ".join(MODELOS))
-        for falha in st.session_state.get("falhas", [])[-8:]:
-            st.caption("⚠ " + falha)
-
-# Análise ativa (continua na tela mesmo depois de remover o arquivo do envio)
-atual = historico.get(st.session_state.ativo)
-if atual:
-    st.caption(f"Documento: {atual['nome']}")
+else:
+    st.caption(f"Documento: {atual['nome_pdf']}  ·  para analisar outro PDF, use ＋ Nova conversa")
     st.subheader("Verificação automática de consistência")
     st.info(atual["checks"])
 
