@@ -112,6 +112,21 @@ footer { visibility: hidden; }
 }
 .mw-sub { color: var(--suave); font-size: 1.05rem; }
 
+/* Arquivo do PDF na conversa */
+.mw-arquivo {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--card);
+    border: 1px solid var(--borda);
+    border-radius: 12px;
+    padding: 10px 14px;
+    min-height: 46px;
+}
+.mw-arquivo .mw-icone { font-size: 1.4rem; }
+.mw-arquivo .mw-nome { font-weight: 600; color: var(--texto); word-break: break-all; }
+.mw-arquivo .mw-tipo { font-size: 0.75rem; color: var(--suave); }
+
 /* Títulos */
 h1, h2, h3, [data-testid="stHeading"] { color: #ffffff; font-weight: 700; }
 
@@ -125,6 +140,7 @@ h1, h2, h3, [data-testid="stHeading"] { color: #ffffff; font-weight: 700; }
 
 /* Botões */
 .stButton > button,
+[data-testid="stDownloadButton"] button,
 [data-testid="stFileUploader"] button {
     background: var(--azul);
     color: #ffffff;
@@ -133,6 +149,7 @@ h1, h2, h3, [data-testid="stHeading"] { color: #ffffff; font-weight: 700; }
     font-weight: 600;
 }
 .stButton > button:hover,
+[data-testid="stDownloadButton"] button:hover,
 [data-testid="stFileUploader"] button:hover {
     background: #1d4ed8;
     color: #ffffff;
@@ -339,6 +356,14 @@ def index_pdf(pdf_bytes):
     return "\n\n".join(describe_page(n, p) for n, p in pdf_to_pngs(pdf_bytes))
 
 
+@st.cache_data(show_spinner=False)
+def paginas_para_visualizar(pdf_bytes, max_pages=20):
+    """Imagens das páginas do PDF, só para visualização na tela (não usa a API)."""
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    return [page.get_pixmap(dpi=100).tobytes("png")
+            for i, page in enumerate(doc) if i < max_pages]
+
+
 # ---------- 5. Verificação cruzada (modelo extrai, Python calcula) ----------
 def num(x):
     """Converte o valor devolvido pelo modelo (número ou texto) em número."""
@@ -457,7 +482,8 @@ def nova_conversa():
         return  # já está numa conversa vazia
     st.session_state.proximo_id += 1
     cid = st.session_state.proximo_id
-    conversas[cid] = {"nome_pdf": None, "doc": None, "checks": None, "messages": []}
+    conversas[cid] = {"nome_pdf": None, "pdf_bytes": None,
+                      "doc": None, "checks": None, "messages": []}
     st.session_state.ativa = cid
 
 
@@ -525,16 +551,43 @@ if atual["doc"] is None:
     file = st.file_uploader("Envie um PDF para começar esta conversa", type="pdf",
                             key=f"up_{st.session_state.ativa}")
     if file is not None:
+        pdf_bytes = file.getvalue()
         with st.spinner("Lendo páginas, tabelas e gráficos..."):
-            doc = index_pdf(file.getvalue())
+            doc = index_pdf(pdf_bytes)
         with st.spinner("Conferindo totais, somas e cálculos..."):
             checks = checks_pdf(doc)
         atual["nome_pdf"] = file.name
+        atual["pdf_bytes"] = pdf_bytes
         atual["doc"] = doc
         atual["checks"] = checks
         st.rerun()
 else:
-    st.caption(f"Documento: {atual['nome_pdf']}  ·  para analisar outro PDF, use ＋ Nova conversa")
+    # O PDF continua na conversa como arquivo: dá para abrir/baixar e visualizar
+    col_arq, col_dl = st.columns([4, 2])
+    col_arq.markdown(
+        f"""
+<div class="mw-arquivo">
+    <span class="mw-icone">📄</span>
+    <div>
+        <div class="mw-nome">{atual['nome_pdf']}</div>
+        <div class="mw-tipo">PDF anexado a esta conversa</div>
+    </div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+    col_dl.download_button(
+        "Abrir / baixar PDF",
+        data=atual["pdf_bytes"],
+        file_name=atual["nome_pdf"],
+        mime="application/pdf",
+        key=f"dl_{st.session_state.ativa}",
+        use_container_width=True,
+    )
+    with st.expander("Visualizar PDF"):
+        for n, img in enumerate(paginas_para_visualizar(atual["pdf_bytes"]), start=1):
+            st.image(img, caption=f"Página {n}", use_container_width=True)
+
     st.subheader("Verificação automática de consistência")
     st.info(atual["checks"])
 
