@@ -45,6 +45,34 @@ footer { visibility: hidden; }
     border-right: 1px solid var(--borda);
 }
 [data-testid="stSidebar"] [data-testid="stCaptionContainer"] { color: var(--suave); }
+[data-testid="stSidebar"] h3 { font-size: 1rem; letter-spacing: 0.04em; }
+
+/* Itens do histórico (botões da barra lateral) */
+[data-testid="stSidebar"] .stButton > button {
+    background: transparent;
+    color: var(--texto);
+    border: 1px solid var(--borda);
+    border-radius: 10px;
+    font-weight: 500;
+    font-size: 0.85rem;
+    justify-content: flex-start;
+    text-align: left;
+}
+[data-testid="stSidebar"] .stButton > button:hover {
+    background: rgba(37, 99, 235, 0.15);
+    border-color: var(--azul);
+    color: #ffffff;
+}
+
+/* Detalhes técnicos discretos */
+[data-testid="stSidebar"] [data-testid="stExpander"] {
+    background: transparent;
+    border: 0;
+}
+[data-testid="stSidebar"] [data-testid="stExpander"] summary {
+    color: var(--suave);
+    font-size: 0.78rem;
+}
 
 /* Cabeçalho do app */
 .mw-hero { padding: 6px 0 22px; }
@@ -160,7 +188,6 @@ def listar_modelos():
 
 
 MODELOS = listar_modelos()[:4]
-st.sidebar.caption("Modelos (em ordem de uso): " + ", ".join(MODELOS))
 
 # Margem aceita quando um valor foi lido pela escala de um gráfico (3%).
 # Aumente para tolerar mais erro de leitura, diminua para ser mais rigoroso.
@@ -264,7 +291,8 @@ def ask(messages):
                     time.sleep(espera)
                     continue
                 break  # cota do dia esgotada ou erro persistente: próximo modelo
-        st.sidebar.warning(f"{modelo} falhou: {str(erro)[:150]}")
+        # o erro de cada modelo fica guardado nos "Detalhes técnicos" da barra lateral
+        st.session_state.setdefault("falhas", []).append(f"{modelo}: {str(erro)[:150]}")
     st.error(
         "Todos os modelos falharam. Erro 429 = limite de uso gratuito; "
         "erro 503 = servidor do Google sobrecarregado (tente de novo em alguns "
@@ -413,32 +441,74 @@ st.markdown(
 )
 file = st.file_uploader("Envie um PDF", type="pdf")
 
-if file:
-    if st.session_state.get("file_name") != file.name:
-        with st.spinner("Lendo páginas, tabelas e gráficos..."):
-            st.session_state.doc = index_pdf(file.getvalue())
-        with st.spinner("Conferindo totais, somas e cálculos..."):
-            st.session_state.checks = run_checks(st.session_state.doc)
-        st.session_state.file_name = file.name
-        st.session_state.messages = []
+# Histórico da sessão: cada PDF analisado fica guardado com a verificação e o chat
+if "historico" not in st.session_state:
+    st.session_state.historico = {}
+    st.session_state.ativo = None
+    st.session_state.ultimo_upload = None
 
+historico = st.session_state.historico
+
+if file is None:
+    st.session_state.ultimo_upload = None
+elif st.session_state.ultimo_upload != (file.name, file.size):
+    chave = (file.name, file.size)
+    existente = next((c for c, h in historico.items() if h["chave"] == chave), None)
+    if existente is None:  # só analisa se esse PDF ainda não está no histórico
+        with st.spinner("Lendo páginas, tabelas e gráficos..."):
+            doc = index_pdf(file.getvalue())
+        with st.spinner("Conferindo totais, somas e cálculos..."):
+            checks = run_checks(doc)
+        existente = max(historico, default=0) + 1
+        historico[existente] = {
+            "chave": chave, "nome": file.name,
+            "doc": doc, "checks": checks, "messages": [],
+        }
+    st.session_state.ativo = existente
+    st.session_state.ultimo_upload = chave
+
+# Barra lateral: histórico e detalhes técnicos discretos
+with st.sidebar:
+    st.markdown("### Histórico")
+    if not historico:
+        st.caption("Nenhuma análise ainda.")
+    for cid in reversed(list(historico)):
+        h = historico[cid]
+        nome = h["nome"] if len(h["nome"]) <= 26 else h["nome"][:23] + "..."
+        rotulo = ("● " if cid == st.session_state.ativo else "") + nome
+        if st.button(rotulo, key=f"hist_{cid}", use_container_width=True):
+            st.session_state.ativo = cid
+            st.rerun()
+    if historico and st.button("Limpar histórico", key="limpar_hist"):
+        st.session_state.historico = {}
+        st.session_state.ativo = None
+        st.rerun()
+    st.write("")
+    with st.expander("Detalhes técnicos", expanded=False):
+        st.caption("Modelos (em ordem de uso): " + ", ".join(MODELOS))
+        for falha in st.session_state.get("falhas", [])[-8:]:
+            st.caption("⚠ " + falha)
+
+# Análise ativa (continua na tela mesmo depois de remover o arquivo do envio)
+atual = historico.get(st.session_state.ativo)
+if atual:
+    st.caption(f"Documento: {atual['nome']}")
     st.subheader("Verificação automática de consistência")
-    st.info(st.session_state.checks)
+    st.info(atual["checks"])
 
     with st.expander("Texto extraído do documento (leitura do modelo)"):
-        st.markdown(st.session_state.doc)
+        st.markdown(atual["doc"])
 
-    for m in st.session_state.messages:
+    for m in atual["messages"]:
         st.chat_message(m["role"]).write(m["content"])
 
     if q := st.chat_input("Pergunte sobre o documento"):
-        st.session_state.messages.append({"role": "user", "content": q})
+        atual["messages"].append({"role": "user", "content": q})
         st.chat_message("user").write(q)
         a = ask([
             {"role": "system",
-             "content": SYSTEM.format(doc=st.session_state.doc,
-                                      checks=st.session_state.checks)},
-            *st.session_state.messages,
+             "content": SYSTEM.format(doc=atual["doc"], checks=atual["checks"])},
+            *atual["messages"],
         ])
-        st.session_state.messages.append({"role": "assistant", "content": a})
+        atual["messages"].append({"role": "assistant", "content": a})
         st.chat_message("assistant").write(a)
