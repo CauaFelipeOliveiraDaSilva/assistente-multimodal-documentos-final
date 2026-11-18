@@ -7,6 +7,133 @@ import fitz  # PyMuPDF
 import streamlit as st
 from openai import OpenAI
 
+# ---------- 0. Layout (somente visual) ----------
+st.set_page_config(page_title="MW Assist", page_icon="🔷", layout="centered")
+
+
+def aplicar_tema():
+    st.markdown(
+        """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+:root {
+    --azul: #2563eb;
+    --azul-claro: #60a5fa;
+    --preto: #05070d;
+    --card: #0d1220;
+    --borda: #1e2a44;
+    --texto: #e6ecf8;
+    --suave: #8fa0c0;
+}
+
+html, body, .stApp, [class*="css"] { font-family: 'Inter', sans-serif; }
+
+.stApp {
+    background:
+        radial-gradient(1100px 560px at 85% -10%, rgba(37, 99, 235, 0.20), transparent 60%),
+        var(--preto);
+    color: var(--texto);
+}
+
+[data-testid="stHeader"] { background: transparent; }
+footer { visibility: hidden; }
+
+/* Barra lateral */
+[data-testid="stSidebar"] {
+    background: #070a12;
+    border-right: 1px solid var(--borda);
+}
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"] { color: var(--suave); }
+
+/* Cabeçalho do app */
+.mw-hero { padding: 6px 0 22px; }
+.mw-chip {
+    display: inline-block;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    color: var(--azul-claro);
+    border: 1px solid var(--borda);
+    background: rgba(37, 99, 235, 0.12);
+    padding: 5px 14px;
+    border-radius: 999px;
+}
+.mw-title {
+    font-size: 3.4rem;
+    font-weight: 800;
+    line-height: 1.05;
+    margin: 14px 0 8px;
+    background: linear-gradient(90deg, #ffffff 0%, #60a5fa 55%, #2563eb 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+.mw-sub { color: var(--suave); font-size: 1.05rem; }
+
+/* Títulos */
+h1, h2, h3, [data-testid="stHeading"] { color: #ffffff; font-weight: 700; }
+
+/* Envio de arquivo */
+[data-testid="stFileUploader"] section {
+    background: var(--card);
+    border: 1.5px dashed var(--azul);
+    border-radius: 14px;
+}
+[data-testid="stFileUploader"] label p { color: var(--texto); font-weight: 600; }
+
+/* Botões */
+.stButton > button,
+[data-testid="stFileUploader"] button {
+    background: var(--azul);
+    color: #ffffff;
+    border: 0;
+    border-radius: 10px;
+    font-weight: 600;
+}
+.stButton > button:hover,
+[data-testid="stFileUploader"] button:hover {
+    background: #1d4ed8;
+    color: #ffffff;
+}
+
+/* Quadro de verificação (st.info) e avisos */
+[data-testid="stAlert"] {
+    background: var(--card);
+    border: 1px solid var(--borda);
+    border-left: 4px solid var(--azul);
+    border-radius: 12px;
+    color: var(--texto);
+}
+
+/* Texto extraído */
+[data-testid="stExpander"] {
+    background: var(--card);
+    border: 1px solid var(--borda);
+    border-radius: 12px;
+}
+
+/* Chat */
+[data-testid="stChatMessage"] {
+    background: var(--card);
+    border: 1px solid var(--borda);
+    border-radius: 14px;
+    padding: 14px;
+}
+[data-testid="stBottom"] > div { background: var(--preto); }
+[data-testid="stChatInput"] > div {
+    background: var(--card);
+    border: 1px solid var(--azul);
+    border-radius: 14px;
+}
+[data-testid="stChatInput"] textarea { color: var(--texto); }
+</style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+aplicar_tema()
+
 # ---------- 1. Conexão com o Gemini (plano gratuito) ----------
 client = OpenAI(
     base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
@@ -274,7 +401,16 @@ def run_checks(doc):
 
 
 # ---------- 6. Interface ----------
-st.title("Assistente Multimodal de Documentos")
+st.markdown(
+    """
+<div class="mw-hero">
+    <span class="mw-chip">ANÁLISE DE DOCUMENTOS</span>
+    <div class="mw-title">MW Assist</div>
+    <div class="mw-sub">Lê tabelas e gráficos e confere se os números fazem sentido.</div>
+</div>
+    """,
+    unsafe_allow_html=True,
+)
 file = st.file_uploader("Envie um PDF", type="pdf")
 
 if file:
