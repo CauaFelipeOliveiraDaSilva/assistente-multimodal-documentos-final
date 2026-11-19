@@ -538,7 +538,7 @@ st.markdown(
 <div class="mw-hero">
     <span class="mw-chip">ANÁLISE DE DOCUMENTOS</span>
     <div class="mw-title">MW Assist</div>
-    <div class="mw-sub">Lê tabelas e gráficos e confere se os números fazem sentido.</div>
+        <div class="mw-sub">Leia menos e saiba mais</div>
 </div>
     """,
     unsafe_allow_html=True,
