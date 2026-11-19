@@ -8,7 +8,7 @@ import streamlit as st
 from openai import OpenAI
 
 # ---------- 0. Layout (somente visual) ----------
-st.set_page_config(page_title="MW Assist", page_icon="🔷", layout="centered")
+st.set_page_config(page_title="Strata", page_icon="🔷", layout="centered")
 
 
 def aplicar_tema():
@@ -536,8 +536,8 @@ with st.sidebar:
 st.markdown(
     """
 <div class="mw-hero">
-    <span class="mw-chip">ANÁLISE DE DOCUMENTOS</span>
-    <div class="mw-title">MW Assist</div>
+     <span class="mw-chip">MULTI-WORK INTELLIGENCE</span>
+    <div class="mw-title">Strata</div>
         <div class="mw-sub">Leia menos e saiba mais</div>
 </div>
     """,
